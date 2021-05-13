@@ -18,7 +18,7 @@ cd demux_seqs
 for file in *R1*.gz; do [ -f "$file" ] || continue; mv -vf "$file" "${file//_*R1_001.fastq.gz/_R1.fastq.gz}"; done
 for file in *R2*.gz; do [ -f "$file" ] || continue; mv -vf "$file" "${file//_*R2_001.fastq.gz/_R2.fastq.gz}"; done
 
-## Run generate_manifest.py, edit values as needed.
+## Run /workflow/generate_manifest.py, edit values as needed.
 ## Copy output to a an excel file, save as manisfest.csv
 ## Leave manifest.csv in main directory
 
