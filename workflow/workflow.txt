@@ -1,0 +1,149 @@
+## srun -p Lewis --mem 50G -n 10 --pty bash
+## Launch conda env
+## Used qiime2-2021.2
+
+### SETUP ###
+
+mkdir demux_seqs
+
+## Move/download sequences into demux_seqs directory 
+
+## All 16S sequences may be obtained from the National 
+## Center for Biotechnology Information (NCBI) Sequence 
+## Read Archive (SRA) under BioProject ID PRJNA729058.
+
+cd demux_seqs
+
+## Edit sequence file name
+for file in *R1*.gz; do [ -f "$file" ] || continue; mv -vf "$file" "${file//_*R1_001.fastq.gz/_R1.fastq.gz}"; done
+for file in *R2*.gz; do [ -f "$file" ] || continue; mv -vf "$file" "${file//_*R2_001.fastq.gz/_R2.fastq.gz}"; done
+
+## Run generate_manifest.py, edit values as needed.
+## Copy output to a an excel file, save as manisfest.csv
+## Leave manifest.csv in main directory
+
+### Sequence Processing ###
+
+## Import demux seqs from manfest file
+qiime tools import \
+  --type "SampleData[PairedEndSequencesWithQuality]" \
+  --input-format PairedEndFastqManifestPhred33 \
+  --input-path ./manifest.csv \
+  --output-path ./demux_seqs.qza
+
+
+## cutadapt - remove adapters/primers from sequencing
+qiime cutadapt trim-paired \
+  --i-demultiplexed-sequences demux_seqs.qza \
+  --p-cores 10 \
+  --p-adapter-f 'ATTAGAWACCCBDGTAGTCC' \
+  --p-front-f 'GTGCCAGCMGCCGCGGTAA' \
+  --p-adapter-r 'TTACCGCGGCKGCTGGCAC' \
+  --p-front-r 'GGACTACHVGGGTWTCTAAT' \
+  --o-trimmed-sequences ./trimmed_demux_seqs.qza
+
+## Summarize to get trim lengths in view.qiime2.org
+qiime demux summarize \
+  --i-data ./trimmed_demux_seqs.qza \
+  --o-visualization ./trimmed_demux_seqs.qzv
+
+## DADA2 denoise
+## p-trunc-len-f/r determined by trimmed_demux_seqs.qzv
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs ./trimmed_demux_seqs.qza \
+  --p-trunc-len-f 150 \
+  --p-trunc-len-r 150 \
+  --o-table ./dada2_table.qza \
+  --o-representative-sequences ./dada2_rep_seqs.qza \
+  --o-denoising-stats ./dada2_stats.qza \
+  --p-n-threads 10
+
+## Denoising stats
+qiime metadata tabulate \
+  --m-input-file ./dada2_stats.qza  \
+  --o-visualization ./dada2_stats.qzv
+
+## Get feature table
+qiime feature-table summarize \
+  --i-table ./dada2_table.qza \
+  --m-sample-metadata-file ./metadata.tsv \
+  --o-visualization ./dada2_table.qzv
+
+## Get feature-table data
+qiime feature-table tabulate-seqs \
+  --i-data ./dada2_rep_seqs.qza \
+  --o-visualization ./dada2_rep_seqs.qzv
+
+## Collect all DADA2 files
+mkdir dada2_files
+mv dada2* ./dada2_files/
+
+
+#### PHYLOGENY ####
+
+qiime phylogeny align-to-tree-mafft-fasttree \
+  --i-sequences dada2_rep_seqs.qza \
+  --o-alignment aligned-rep-seqs.qza \
+  --o-masked-alignment masked-aligned-rep-seqs.qza \
+  --o-tree unrooted-tree.qza \
+  --o-rooted-tree rooted-tree.qza
+
+
+## Picking rarefaction depth
+## Change the max seq depth to 335792 from dada2_stats.qzv
+qiime diversity alpha-rarefaction \
+  --i-table ./dada2_table.qza \
+  --m-metadata-file ./metadata.tsv \
+  --o-visualization ./alpha_rarefaction_curves.qzv \
+  --p-min-depth 1 \
+  --p-max-depth 335792
+
+## Change sampling depth from rarefaction decision
+qiime diversity core-metrics-phylogenetic \
+  --i-table ./dada2_table.qza \
+  --i-phylogeny ./rooted-tree.qza \
+  --m-metadata-file ./metadata.tsv \
+  --p-sampling-depth 11394 \
+  --output-dir ./core-metrics-results
+
+qiime tools export \
+  --input-path ./core-metrics-results/rarefied_table.qza \
+  --output-path ./core-metrics-results/
+
+biom convert --to-tsv \
+  -i ./core-metrics-results/feature-table.biom \
+  -o ./rarefied-feature-table.tsv 
+
+## Collect MAFFT allign files
+mkdir mafft_output
+mv aligned-rep-seqs.qza ./mafft_output/
+mv rooted-tree.qza ./mafft_output/
+mv unrooted-tree.qza ./mafft_output/
+mv masked-aligned-rep-seqs.qza ./mafft_output/
+
+#### TAXONOMY ####
+## Assign taxonomy
+## Classifier from docs.qiime2.org
+## https://docs.qiime2.org/2021.4/data-resources/#taxonomy-classifiers-for-use-with-q2-feature-classifier
+
+qiime feature-classifier classify-sklearn \
+  --i-reads ./dada2_rep_seqs.qza \
+  --i-classifier ./feature-classifier/silva-138-99-515-806-nb-classifier.qza \
+  --o-classification ./taxonomy.qza
+
+## Tabulate taxonomy
+qiime metadata tabulate \
+  --m-input-file ./taxonomy.qza \
+  --o-visualization ./taxonomy.qzv
+
+## Generate taxa barplot with rarefied feature table from core-metrics-results
+qiime taxa barplot \
+  --i-table ./core-metrics-results/rarefied-feature-table.qza \
+  --i-taxonomy ./taxonomy_for-all-samples.qza \
+  --m-metadata-file ./metadata.tsv \
+  --o-visualization ./taxa_barplot.qzv
+
+## collect taxonomy
+mkdir taxonomy
+mv taxa* ./taxonomy/
+mv taxonomy.qz* ./taxonomy/
